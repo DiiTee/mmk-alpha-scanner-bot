@@ -29,7 +29,7 @@ def generate_links(ca: str, chain: str, full=True):
             links.append([InlineKeyboardButton("SolScan", url=f"https://solscan.io/token/{ca}")])
             links.append([InlineKeyboardButton("RugCheck", url=f"https://rugcheck.xyz/tokens/{ca}")])
             links.append([InlineKeyboardButton("Tokensniffer", url=f"https://tokensniffer.com/token/solana/{ca}")])
-            links.append([InlineKeyboardButton("Swap on Orca", url=f"https://www.orca.so/pool/{ca}")])
+            links.append([InlineKeyboardButton("Swap on Orca", url=f"https://www.orca.so/?tokenIn=So11111111111111111111111111111111111111112&tokenOut={ca}")])
         else:
             links.append([InlineKeyboardButton("SolScan", url=f"https://solscan.io/token/{ca}")])
 
