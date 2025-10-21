@@ -7,15 +7,35 @@ from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 
 # -----------------------
-# Chain detection
+# Chain detection and normalization
 # -----------------------
-def detect_chain(ca: str):
-    if ca.startswith("0x"):
-        return "BNB/Base"
-    elif len(ca) == 44:
+def normalize_chain(chain_input: str):
+    """Normalize chain name from user input"""
+    chain_lower = chain_input.lower().strip()
+    if chain_lower in ["sol", "solana"]:
         return "SOL"
-    else:
-        return "Unknown"
+    elif chain_lower in ["bnb", "bsc", "binance"]:
+        return "BNB"
+    elif chain_lower in ["base"]:
+        return "Base"
+    return None
+
+def detect_chain(ca: str):
+    """Auto-detect chain from contract address format"""
+    ca = ca.strip()
+    
+    # Solana: 32-44 chars, base58 encoded (no 0x prefix)
+    if not ca.startswith("0x") and 32 <= len(ca) <= 44:
+        # Check if it's valid base58-like (no 0, O, I, l in base58)
+        if all(c in "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz" for c in ca):
+            return "SOL"
+    
+    # EVM chains (BNB, Base, etc): 0x + 40 hex chars
+    if ca.startswith("0x") and len(ca) == 42:
+        # Default to BNB for now, user can specify if it's Base
+        return "BNB"
+    
+    return "Unknown"
 
 # -----------------------
 # Generate pre-filled token links
@@ -68,24 +88,46 @@ async def toggleshowfull(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # /scan command
 # -----------------------
 async def scan(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if len(context.args) != 1:
-        await update.message.reply_text("Usage: /scan <contract_address>")
+    if len(context.args) == 0:
+        await update.message.reply_text(
+            "Usage:\n• /scan &lt;contract_address&gt;\n• /scan &lt;chain&gt; &lt;contract_address&gt;\n\nChains: SOL, BNB, Base",
+            parse_mode="HTML"
+        )
         return
 
-    ca = context.args[0].strip()
-    chain = detect_chain(ca)
     chat_id = update.message.chat_id
     full = toggle_show_full.get(chat_id, True)
+    
+    # Check if user specified chain explicitly
+    if len(context.args) == 2:
+        chain = normalize_chain(context.args[0])
+        ca = context.args[1].strip()
+        if not chain:
+            await update.message.reply_text("❌ Invalid chain. Use: SOL, BNB, or Base")
+            return
+    elif len(context.args) == 1:
+        ca = context.args[0].strip()
+        chain = detect_chain(ca)
+    else:
+        await update.message.reply_text(
+            "Usage:\n• /scan &lt;contract_address&gt;\n• /scan &lt;chain&gt; &lt;contract_address&gt;\n\nChains: SOL, BNB, Base",
+            parse_mode="HTML"
+        )
+        return
+
+    if chain == "Unknown":
+        await update.message.reply_text("❌ Cannot detect chain. Please specify: /scan &lt;chain&gt; &lt;address&gt;", parse_mode="HTML")
+        return
 
     links = generate_links(ca, chain, full)
     if not links:
-        await update.message.reply_text("❌ Unknown chain. Cannot generate links.")
+        await update.message.reply_text("❌ Cannot generate links for this chain.")
         return
 
     reply_markup = InlineKeyboardMarkup(links)
     await update.message.reply_text(
-        f"🔗 Links for contract: `{ca}`\nChain detected: *{chain}*\nTap a button to open the token page / scanner / swap.",
-        parse_mode="Markdown",
+        f"🔗 Links for contract: <code>{ca}</code>\nChain: <b>{chain}</b>",
+        parse_mode="HTML",
         reply_markup=reply_markup,
     )
 
@@ -94,23 +136,52 @@ async def scan(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # -----------------------
 async def scanmulti(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
-        await update.message.reply_text("Usage: /scanmulti <CA1>,<CA2>,<CA3>")
+        await update.message.reply_text(
+            "Usage:\n• /scanmulti &lt;CA1&gt;,&lt;CA2&gt;,&lt;CA3&gt;\n• /scanmulti &lt;chain&gt; &lt;CA1&gt;,&lt;CA2&gt;,&lt;CA3&gt;\n\nChains: SOL, BNB, Base",
+            parse_mode="HTML"
+        )
         return
 
-    contracts = " ".join(context.args).replace(" ", "").split(",")
     chat_id = update.message.chat_id
     full = toggle_show_full.get(chat_id, True)
-
+    
+    # Check if first arg is a chain name
+    chain_specified = None
+    if len(context.args) >= 2:
+        potential_chain = normalize_chain(context.args[0])
+        if potential_chain:
+            chain_specified = potential_chain
+            contracts_str = " ".join(context.args[1:])
+        else:
+            contracts_str = " ".join(context.args)
+    else:
+        contracts_str = " ".join(context.args)
+    
+    contracts = contracts_str.replace(" ", "").split(",")
+    
     for ca in contracts:
-        chain = detect_chain(ca)
+        ca = ca.strip()
+        if not ca:
+            continue
+            
+        if chain_specified:
+            chain = chain_specified
+        else:
+            chain = detect_chain(ca)
+        
+        if chain == "Unknown":
+            await update.message.reply_text(f"❌ Cannot detect chain for <code>{ca}</code>. Skipping.", parse_mode="HTML")
+            continue
+            
         links = generate_links(ca, chain, full)
         if not links:
-            await update.message.reply_text(f"❌ Unknown chain for `{ca}`. Skipping.")
+            await update.message.reply_text(f"❌ Cannot generate links for <code>{ca}</code>. Skipping.", parse_mode="HTML")
             continue
+            
         reply_markup = InlineKeyboardMarkup(links)
         await update.message.reply_text(
-            f"🔗 Links for contract: `{ca}`\nChain detected: *{chain}*",
-            parse_mode="Markdown",
+            f"🔗 Links for contract: <code>{ca}</code>\nChain: <b>{chain}</b>",
+            parse_mode="HTML",
             reply_markup=reply_markup,
         )
 
@@ -118,20 +189,31 @@ async def scanmulti(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # /start and /help
 # -----------------------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = """
-⚡ Welcome to **MmkAlphaScanner Quick Scan Bot**!
+    text = """⚡ Welcome to <b>MmkAlphaScanner Quick Scan Bot</b>!
 
-Commands:
-🪙 /scan <contract_address> — Single token quick links
-⚡ /scanmulti <CA1>,<CA2> — Bulk token links
-🔁 /toggleshowfull — Toggle compact/full link view
+<b>Commands:</b>
+🪙 /scan &lt;contract_address&gt;
+   /scan &lt;chain&gt; &lt;contract_address&gt;
+   Single token quick links
 
-Features:
-- Solana + BNB + Base support
-- Opens scanners, block explorers, and swap pages
-- Full mode shows all links; compact mode shows main explorer only
-"""
-    await update.message.reply_text(text, parse_mode="Markdown")
+⚡ /scanmulti &lt;CA1&gt;,&lt;CA2&gt;,&lt;CA3&gt;
+   /scanmulti &lt;chain&gt; &lt;CA1&gt;,&lt;CA2&gt;
+   Bulk token links
+
+🔁 /toggleshowfull
+   Toggle compact/full link view
+
+<b>Supported Chains:</b>
+• SOL (Solana)
+• BNB (Binance Smart Chain)
+• Base
+
+<b>Features:</b>
+• Auto-detects chain from contract format
+• Or specify chain explicitly for accuracy
+• Opens scanners, block explorers, and swap pages
+• Full mode shows all links; compact shows main explorer only"""
+    await update.message.reply_text(text, parse_mode="HTML")
 
 # -----------------------
 # Telegram app setup
